@@ -64,6 +64,26 @@ def absolute_url(value):
     return urljoin(BASE_URL + "/", value or "")
 
 
+def entry_poster(entry):
+    images = entry.get("images") or {}
+    image_values = images.values() if isinstance(images, dict) else []
+    candidates = [
+        images.get("poster") if isinstance(images, dict) else None,
+        images.get("cover") if isinstance(images, dict) else None,
+        images.get("thumbnail") if isinstance(images, dict) else None,
+        entry.get("poster"),
+        entry.get("image"),
+        entry.get("thumbnail"),
+        *image_values,
+    ]
+    for value in candidates:
+        if isinstance(value, dict):
+            value = value.get("url") or value.get("src")
+        if isinstance(value, str) and value.strip():
+            return absolute_url(value.strip())
+    return ""
+
+
 def thumbnail(tag):
     if not tag:
         return ""
@@ -219,14 +239,13 @@ def next_data_items(html, content_type):
         slug = re.sub(r"^/?movies/", "pelicula/", str(slug).lstrip("/"))
         slug = re.sub(r"^/?series/", "serie/", slug)
         href = absolute_url(slug)
-        images = entry.get("images") or {}
         titles = entry.get("titles") or {}
         release = str(entry.get("releaseDate") or "")
         items.append({
             "id": encode_id(href),
             "type": content_type,
             "name": clean_title(titles.get("name") or ""),
-            "poster": images.get("poster") or "",
+            "poster": entry_poster(entry),
             "description": entry.get("overview") or "",
             "year": release[:4] if release else "",
         })
@@ -303,7 +322,7 @@ def meta_route(content_type, content_id):
     if content_type == "series":
         props = data.get("props", {}).get("pageProps", {})
         serie = props.get("thisSerie", {})
-        meta["poster"] = serie.get("images", {}).get("poster", "") or meta["poster"]
+        meta["poster"] = entry_poster(serie) or meta["poster"]
         meta["videos"] = [
             {"id": encode_id(absolute_url(ep.get("url", {}).get("slug", "").replace("series/", "serie/").replace("seasons", "temporada").replace("episodes", "episodio"))), "season": season.get("number", 1), "episode": ep.get("number", 1), "title": ep.get("title") or f"Episodio {ep.get('number', 1)}", "thumbnail": ep.get("image") or meta["poster"]}
             for season in serie.get("seasons", []) for ep in season.get("episodes", []) if ep.get("url", {}).get("slug")

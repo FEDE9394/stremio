@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus, unquote_plus, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -163,17 +163,25 @@ def next_data(url):
 
 
 def manifest():
+    catalog_extras = [
+        {"name": "search", "isRequired": False},
+        {"name": "skip", "isRequired": False},
+    ]
     return {
         "id": "community.poseidonhd.stremio",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "name": "PoseidonHD",
         "description": "Peliculas y series de PoseidonHD",
         "resources": ["catalog", "meta", "stream"],
         "types": ["movie", "series"],
         "idPrefixes": ["poseidon_"],
         "catalogs": [
-            {"type": "movie", "id": "poseidon_movies", "name": "PoseidonHD Peliculas", "extra": [{"name": "search", "isRequired": False}, {"name": "skip", "isRequired": False}]},
-            {"type": "series", "id": "poseidon_series", "name": "PoseidonHD Series", "extra": [{"name": "search", "isRequired": False}, {"name": "skip", "isRequired": False}]},
+            {"type": "movie", "id": "poseidon_movies", "name": "PoseidonHD Peliculas", "extra": catalog_extras},
+            {"type": "series", "id": "poseidon_series", "name": "PoseidonHD Series", "extra": catalog_extras},
+            {"type": "movie", "id": "poseidon_movies_day", "name": "Peliculas - Tendencias del dia", "extra": catalog_extras},
+            {"type": "movie", "id": "poseidon_movies_week", "name": "Peliculas - Tendencias de la semana", "extra": catalog_extras},
+            {"type": "series", "id": "poseidon_series_day", "name": "Series - Tendencias del dia", "extra": catalog_extras},
+            {"type": "series", "id": "poseidon_series_week", "name": "Series - Tendencias de la semana", "extra": catalog_extras},
         ],
     }
 
@@ -235,12 +243,22 @@ def catalog_route(content_type, catalog_id, query=""):
 
     urls = []
     if query:
-        query_clean = re.sub(r"&skip=\d+", "", query)
+        query_clean = unquote_plus(query)
+        query_clean = re.sub(r"&skip=\d+", "", query_clean).strip()
         urls.append(f"{BASE_URL}/search?q={quote_plus(query_clean)}&page={page}")
         urls.append(f"{BASE_URL}/search?q={quote_plus(query_clean)}")
     else:
         section = "peliculas" if content_type == "movie" else "series"
-        urls.append(f"{BASE_URL}/{section}/page/{page}/")
+        trend_period = ""
+        if catalog_id.endswith("_day"):
+            trend_period = "dia"
+        elif catalog_id.endswith("_week"):
+            trend_period = "semana"
+        trend_path = f"/tendencias/{trend_period}" if trend_period else ""
+        urls.append(f"{BASE_URL}/{section}{trend_path}/page/{page}/")
+        urls.append(f"{BASE_URL}/{section}{trend_path}/")
+        if trend_period:
+            urls.append(f"{BASE_URL}/{section}/page/{page}/")
         urls.append(f"{BASE_URL}/{section}/?page={page}")
         urls.append(f"{BASE_URL}/{section}/")
 
@@ -327,8 +345,10 @@ def jsunpack(html):
 
 def find_stream_in_html(html):
     patterns = [
-        r'"(?:file|hls\d?|source|src)"\s*:\s*"(https?://[^"]+\.(?:m3u8|mp4)[^"]*)"',
-        r"(?:file|hls|source|src)\s*[:=]\s*['\"](https?://[^'\"]+\.(?:m3u8|mp4)[^'\"]*)",
+        r'"(?:file|hls\d?|source|src)"\s*:\s*"(https?://[^" ]+\.(?:m3u8|mp4)(?:\?[^" ]*)?)"',
+        r"(?:file|hls|source|src)\s*[:=]\s*['\"](https?://[^'\"]+\.(?:m3u8|mp4)(?:\?[^'\"]*)?)",
+        r'"(?:file|hls\d?|source|src)"\s*:\s*"(https?://[^" ]+)"',
+        r"(?:file|hls|source|src)\s*[:=]\s*['\"](https?://[^'\"]+)",
         r"(https?://[^\s\"'<>]+\.m3u8(?:\?[^\s\"'<>]*)?)",
         r"(https?://[^\s\"'<>]+\.mp4(?:\?[^\s\"'<>]*)?)",
     ]
@@ -404,13 +424,6 @@ def stream_route(content_type, content_id):
                             }
                         },
                     },
-                })
-            else:
-                # Fallback: abrir el reproductor de Poseidon en el navegador
-                streams.append({
-                    "name": source,
-                    "title": f"{label} (ver en Poseidon)",
-                    "externalUrl": embed,
                 })
     return jsonify({"streams": streams})
 

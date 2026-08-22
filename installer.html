@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instalar PoseidonHD en Stremio</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #10151c; color: #f4f7fb; }
+    main { width: min(92%, 460px); padding: 32px; text-align: center; background: #1b2430; border: 1px solid #344354; border-radius: 12px; box-sizing: border-box; }
+    h1 { margin: 0 0 12px; font-size: 1.8rem; }
+    p { color: #b9c5d2; line-height: 1.5; }
+    .install { display: inline-block; margin: 18px 0 12px; padding: 14px 22px; border-radius: 8px; background: #72b5f5; color: #08111b; font-weight: 700; text-decoration: none; }
+    .install:hover { background: #9acbfa; }
+    button { border: 0; background: transparent; color: #9acbfa; cursor: pointer; font: inherit; text-decoration: underline; }
+    code { display: block; margin-top: 18px; padding: 10px; overflow-wrap: anywhere; color: #d5e7fa; background: #111820; border-radius: 6px; font-size: .8rem; }
+    #status { min-height: 1.5em; color: #8fdda9; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>PoseidonHD para Stremio</h1>
+    <p>Presioná el botón para abrir Stremio e instalar el addon.</p>
+    <a class="install" href="stremio://addon-install?url=https%3A%2F%2Fposeidonhd-stremio.onrender.com%2Fmanifest.json">Instalar en Stremio</a>
+    <p id="status"></p>
+    <button type="button" id="copy">Copiar URL manual</button>
+    <code>https://poseidonhd-stremio.onrender.com/manifest.json</code>
+  </main>
+  <script>
+    const manifestUrl = 'https://poseidonhd-stremio.onrender.com/manifest.json';
+    document.querySelector('#copy').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(manifestUrl);
+        document.querySelector('#status').textContent = 'URL copiada. Pegala en Stremio.';
+      } catch {
+        document.querySelector('#status').textContent = manifestUrl;
+      }
+    });
+  </script>
+</body>
+</html>

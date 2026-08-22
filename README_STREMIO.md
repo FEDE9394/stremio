@@ -31,4 +31,7 @@ En Stremio se instala usando:
 
 Para usarlo localmente, ejecuta el servidor y usa la URL indicada abajo. El addon conserva búsqueda,
 catálogos, fichas, temporadas/episodios y resolución de fuentes directas que el
-servidor entregue como `.m3u8` o `.mp4`.
+servidor entregue como `.m3u8` o `.mp4`. El manifiesto incluye catálogos separados de tendencias del día y de la semana
+para películas y series. En Android solo se muestran fuentes directas que
+Stremio puede reproducir internamente; los reproductores web externos se
+descartan para evitar abrir el navegador.

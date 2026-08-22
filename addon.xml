@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="plugin.video.poseidon_search"
+       name="PoseidonHD Netflix"
+       version="2.0.0"
+       provider-name="DevPoseidon">
+    <requires>
+        <import addon="xbmc.python" version="3.0.0"/>
+        <import addon="script.module.requests" version="2.12.0"/>
+        <import addon="script.module.beautifulsoup4" version="4.5.0"/>
+        <import addon="script.module.resolveurl" version="5.0.0" optional="true"/>
+    </requires>
+    <extension point="xbmc.python.pluginsource"
+               library="main.py">
+        <provides>video</provides>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="en">Netflix-style interface for PoseidonHD2.co</summary>
+        <summary lang="es">Interfaz estilo Netflix para PoseidonHD2.co</summary>
+        <description lang="en">Netflix-style addon to browse, search and play movies and series from www.poseidonhd2.co. Features: categories, genres, trends, seasons, episodes, and integrated server resolvers for Streamwish, Filemoon, Streamtape, Doodstream, VOE, and more.</description>
+        <description lang="es">Addon con interfaz estilo Netflix para navegar, buscar y reproducir películas y series de www.poseidonhd2.co. Incluye: categorías, géneros, tendencias, temporadas, episodios y resolvers integrados para Streamwish, Filemoon, Streamtape, Doodstream, VOE y más.</description>
+        <platform>all</platform>
+    </extension>
+</addon>

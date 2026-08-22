@@ -169,7 +169,7 @@ def manifest():
     ]
     return {
         "id": "community.poseidonhd.stremio",
-        "version": "1.3.0",
+        "version": "1.4.0",
         "name": "PoseidonHD",
         "description": "Peliculas y series de PoseidonHD",
         "resources": ["catalog", "meta", "stream"],
@@ -327,20 +327,32 @@ def _base36(value):
 
 
 def jsunpack(html):
-    """Desempaqueta scripts ofuscados p,a,c,k,e,d (streamwish, filemoon, etc.).
-    Soporta radix decimal y base 36."""
-    match = re.search(
-        r"eval\(function\(p,a,c,k,e,d\)\{.*?\}\('(.+?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)",
-        html, re.S)
+    """Desempaqueta variantes del packer de Dean Edwards."""
+    match = re.search(r"eval\(function\(p,a,c,k,e,(?:r|d)\)\{.*?return p", html, re.S)
     if not match:
         return html
-    packed, radix, count, words = match.group(1), int(match.group(2)), int(match.group(3)), match.group(4).split("|")
-    unpacked = packed
-    for i in range(count - 1, -1, -1):
-        if i < len(words) and words[i]:
-            token = _base36(i) if radix == 36 else str(i)
-            unpacked = re.sub(r"\b%s\b" % re.escape(token), lambda m, word=words[i]: word, unpacked)
-    return unpacked
+    inner = re.search(r"'((?:[^'\\]|\\.)*)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'((?:[^'\\]|\\.)*)'", html[match.start():], re.S)
+    if not inner:
+        return html
+    packed = inner.group(1).replace("\\'", "'").replace("\\\\", "\\")
+    radix, count = int(inner.group(2)), int(inner.group(3))
+    words = inner.group(4).replace("\\'", "'").split("|")
+
+    def decode_token(token):
+        digits = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        value = 0
+        try:
+            for char in token:
+                value = value * radix + digits.index(char)
+            return value
+        except ValueError:
+            return -1
+
+    def replace_token(found):
+        index = decode_token(found.group(0))
+        return words[index] if 0 <= index < len(words) and words[index] else found.group(0)
+
+    return re.sub(r"\b\w+\b", replace_token, packed)
 
 
 def find_stream_in_html(html):
@@ -356,7 +368,8 @@ def find_stream_in_html(html):
         for pattern in patterns:
             match = re.search(pattern, html_variant, re.I)
             if match:
-                return match.group(1).replace("\\u0026", "&").replace("\\/", "/")
+                return (match.group(1).replace("\\u0026", "&").replace("\\/", "/")
+                        .replace("\\u003F", "?").replace("\\u003d", "="))
     return None
 
 
@@ -367,7 +380,10 @@ def resolve(embed_url, content_url):
     if re.search(r"\.(m3u8|mp4)(\?|$)", embed_url, re.I):
         return embed_url
     parsed = urlparse(embed_url)
-    referer = f"{parsed.scheme}://{parsed.netloc}/"
+    referer = embed_url.split("|", 1)[0]
+    if "|" in embed_url:
+        embed_url = referer
+        parsed = urlparse(embed_url)
     candidates = [embed_url]
     # Streamwish sirve una pagina "Loading..." con main.js que redirige a un
     # espejo; probamos espejos conocidos con el mismo path.
@@ -375,7 +391,12 @@ def resolve(embed_url, content_url):
         candidates += [mirror + parsed.path + ("?" + parsed.query if parsed.query else "") for mirror in STREAMWISH_MIRRORS]
     for candidate in candidates:
         try:
-            html = fetch(candidate, referer)
+            session = requests.Session()
+            session.headers.update({**HEADERS, "Referer": referer})
+            session.get(f"{parsed.scheme}://{parsed.netloc}/", timeout=8)
+            response = session.get(candidate, timeout=15)
+            response.raise_for_status()
+            html = response.text
         except requests.RequestException:
             continue
         stream_url = find_stream_in_html(html)
@@ -410,7 +431,7 @@ def stream_route(content_type, content_id):
             if stream_url:
                 # Stream directo: se reproduce dentro de Stremio, sin navegador ni propagandas
                 parsed = urlparse(stream_url)
-                referer = f"{parsed.scheme}://{parsed.netloc}/"
+                referer = embed.split("|", 1)[0]
                 streams.append({
                     "name": source,
                     "title": label,

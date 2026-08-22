@@ -29,6 +29,14 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
 def encode_id(url):
     return "poseidon_" + base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
 

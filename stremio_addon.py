@@ -5,15 +5,20 @@ routes. Content IDs are opaque, URL-safe encodings of PoseidonHD page URLs.
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
+import random
 import re
-from urllib.parse import quote_plus, unquote_plus, urljoin, urlparse
+import string
+import struct
+import time
+from urllib.parse import quote_plus, unquote_plus, urlencode, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 BASE_URL = "https://www.poseidonhd2.co"
 USER_AGENT = (
@@ -406,10 +411,130 @@ def find_stream_in_html(html):
 STREAMWISH_MIRRORS = ["https://wishonly.site", "https://swhoi.com"]
 
 
+def _solve_altcha(session, html):
+    """Resuelve el captcha ALTCHA (proof-of-work) de los espejos de Voe."""
+    challenge_match = re.search(r'<altcha-widget[^>]*challenge="([^"]+)"', html)
+    token_match = re.search(r'name="_token"\s+value="([^"]+)"', html)
+    form_match = re.search(r'<form[^>]*action="([^"]+)"', html)
+    if not (challenge_match and token_match and form_match):
+        return None
+    try:
+        challenge_data = session.get(challenge_match.group(1), timeout=15).json()
+    except (requests.RequestException, ValueError):
+        return None
+    # Esquema PBKDF2 del widget: password = nonce(hex) + contador uint32 BE,
+    # la clave derivada debe comenzar con keyPrefix.
+    params = challenge_data.get("parameters") or {}
+    nonce_hex = params.get("nonce", "")
+    salt_hex = params.get("salt", "")
+    prefix = params.get("keyPrefix", "")
+    cost = int(params.get("cost", 10000))
+    key_length = int(params.get("keyLength", 32))
+    if not (nonce_hex and prefix):
+        return None
+    try:
+        nonce_bytes = bytes.fromhex(nonce_hex)
+        salt_bytes = bytes.fromhex(salt_hex) if salt_hex else b""
+    except ValueError:
+        return None
+    number = None
+    for candidate in range(1000000):
+        password = nonce_bytes + struct.pack(">I", candidate)
+        derived = hashlib.pbkdf2_hmac("sha256", password, salt_bytes,
+                                      cost, dklen=key_length)
+        if derived.hex().startswith(prefix):
+            number = candidate
+            break
+    if number is None:
+        return None
+    payload = {
+        "algorithm": params.get("algorithm", "PBKDF2/SHA-256"),
+        "challenge": challenge_data.get("signature", ""),
+        "number": number,
+        "salt": salt_hex,
+        "signature": challenge_data.get("signature", ""),
+    }
+    altcha_token = base64.b64encode(json.dumps(payload).encode()).decode()
+    response = session.post(
+        form_match.group(1),
+        data={"_token": token_match.group(1), "access": "0", "altcha": altcha_token},
+        headers={"Referer": form_match.group(1)},
+        timeout=15,
+    )
+    if response.status_code == 200 and "altcha-widget" not in response.text:
+        return response.text
+    return None
+
+
+def resolve_voe(embed_url):
+    """Resuelve enlaces de voe.sx (varias estrategias segun la plantilla)."""
+    session = requests.Session()
+    session.headers.update({**HEADERS, "Referer": "https://voe.sx/"})
+    response = session.get(embed_url, timeout=15)
+    html = response.text
+    # Voe a veces sirve una pagina intermedia que redirige a un dominio espejo
+    redirect = re.search(r"window\.location\.href\s*=\s*'([^']+)'", html)
+    if redirect and "voe." not in urlparse(redirect.group(1)).netloc:
+        response = session.get(redirect.group(1), timeout=15)
+        html = response.text
+        # El espejo puede pedir verificacion humana (ALTCHA): la resolvemos
+        if "altcha-widget" in html:
+            solved = _solve_altcha(session, html)
+            if solved:
+                html = solved
+    # Estrategia 1: fuentes con URL en base64 (empiezan con aHR0)
+    for match in re.finditer(r"(?:mp4|hls)['\"]?\s*:\s*['\"](aHR0[^'\"]+)['\"]", html):
+        try:
+            return base64.b64decode(match.group(1)).decode()
+        except Exception:
+            continue
+    # Estrategia 2: let <hex>='<base64>' con JSON invertido {"file": ...}
+    match = re.search(r"let\s+[0-9a-f]+\s*=\s*'([A-Za-z0-9+/=]+)'", html)
+    if match:
+        try:
+            decoded = json.loads(base64.b64decode(match.group(1)).decode()[::-1])
+            if decoded.get("file"):
+                return decoded["file"]
+        except Exception:
+            pass
+    # Estrategia 3: cualquier m3u8/mp4 directo o dentro del JS desempaquetado
+    return find_stream_in_html(html)
+
+
+def resolve_dood(embed_url):
+    """Resuelve enlaces de doodstream y clones (pass_md5 + token)."""
+    session = requests.Session()
+    session.headers.update({**HEADERS, "Referer": "https://www.poseidonhd2.co/"})
+    response = session.get(embed_url, timeout=15)
+    # doodstream.com y similares redirigen a su dominio real de reproduccion
+    final_url = response.url
+    parsed = urlparse(final_url)
+    host = f"{parsed.scheme}://{parsed.netloc}"
+    html = response.text
+    match = re.search(r"\$\.\s*get\('(/pass_md5/[^']+)'", html) or re.search(
+        r"['\"](/pass_md5/[^'\"]+)['\"]", html)
+    if not match:
+        return find_stream_in_html(html)
+    md5_response = session.get(host + match.group(1),
+                               headers={"Referer": final_url}, timeout=15)
+    video_base = md5_response.text.strip() if md5_response.status_code == 200 else ""
+    if not video_base.startswith("http"):
+        return None
+    token = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    expiry = str(int(time.time() * 1000))
+    return f"{video_base}{token}?token={token}&expiry={expiry}"
+
+
 def resolve(embed_url, content_url):
     if re.search(r"\.(m3u8|mp4)(\?|$)", embed_url, re.I):
         return embed_url
     parsed = urlparse(embed_url)
+    netloc = parsed.netloc.lower()
+    # Resolutores especificos por servidor
+    if "voe." in netloc or netloc.startswith("voe"):
+        return resolve_voe(embed_url)
+    if "dood" in netloc or "dsvplay" in netloc or "d000d" in netloc:
+        return resolve_dood(embed_url)
     referer = embed_url.split("|", 1)[0]
     if "|" in embed_url:
         embed_url = referer
@@ -433,6 +558,84 @@ def resolve(embed_url, content_url):
         if stream_url:
             return stream_url
     return None
+
+
+def _proxy_headers(target_url, referer):
+    headers = {"User-Agent": USER_AGENT}
+    if referer:
+        headers["Referer"] = referer
+    parsed = urlparse(target_url)
+    if parsed.scheme == "https":
+        headers["Origin"] = f"{parsed.scheme}://{parsed.netloc}"
+    return headers
+
+
+def _rewrite_playlist(text, target_url, referer):
+    """Reescribe una playlist HLS apuntando cada recurso al proxy local."""
+    base = request.base_url
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            lines.append(line)
+            continue
+        if stripped.startswith("#"):
+            # Solo se reescribe el atributo URI; otros como CODECS quedan intactos
+            def replace_uri(m):
+                value = m.group(1)
+                absolute = urljoin(target_url, value)
+                return 'URI="{}?{}"'.format(
+                    base, urlencode({"url": absolute, "referer": referer}))
+            line = re.sub(r'URI="([^"]*)"', replace_uri, line)
+            lines.append(line)
+            continue
+        absolute = urljoin(target_url, stripped)
+        lines.append(f"{base}?{urlencode({'url': absolute, 'referer': referer})}")
+    return "\n".join(lines)
+
+
+@app.route("/proxy")
+def proxy_route():
+    """Proxy de HLS/MP4: agrega CORS y las cabeceras (Referer/UA) que los
+    CDNs exigen, permitiendo la reproduccion directa dentro de Stremio."""
+    target_url = request.args.get("url", "")
+    referer = request.args.get("referer", "")
+    if not target_url.startswith("http"):
+        return ("URL invalida", 400)
+    range_header = request.headers.get("Range")
+    headers = _proxy_headers(target_url, referer)
+    if range_header:
+        headers["Range"] = range_header
+    try:
+        upstream = requests.get(target_url, headers=headers,
+                                stream=True, timeout=30)
+    except requests.RequestException as exc:
+        return (f"Error de upstream: {exc}", 502)
+
+    content_type = upstream.headers.get("Content-Type", "")
+    if "mpegurl" in content_type or target_url.split("?")[0].endswith(".m3u8"):
+        playlist = _rewrite_playlist(upstream.text, target_url, referer)
+        return Response(playlist, mimetype="application/vnd.apple.mpegurl",
+                        headers={"Access-Control-Allow-Origin": "*"})
+
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    response_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Accept-Ranges": "bytes",
+    }
+    for key in ("Content-Length", "Content-Range"):
+        if key in upstream.headers:
+            response_headers[key] = upstream.headers[key]
+    status = 206 if range_header and "Content-Range" in response_headers else 200
+    return Response(generate(), status=status, content_type=content_type or "video/mp4",
+                    headers=response_headers)
 
 
 @app.get("/stream/<content_type>/<content_id>.json")
@@ -459,22 +662,16 @@ def stream_route(content_type, content_id):
             label = f"{language} - {option.get('quality', 'HD')}"
             source = option.get("cyberlocker", "PoseidonHD")
             if stream_url:
-                # Stream directo: se reproduce dentro de Stremio, sin navegador ni propagandas
-                parsed = urlparse(stream_url)
+                # Se sirve a traves del proxy local del addon: resuelve CORS
+                # y las cabeceras Referer/User-Agent que exigen los CDNs.
                 referer = embed.split("|", 1)[0]
+                proxied = f"{request.host_url.rstrip('/')}/proxy?" + urlencode(
+                    {"url": stream_url, "referer": referer})
                 streams.append({
                     "name": source,
                     "title": label,
-                    "url": stream_url,
-                    "behaviorHints": {
-                        "notWebReady": True,
-                        "proxyHeaders": {
-                            "request": {
-                                "User-Agent": USER_AGENT,
-                                "Referer": referer,
-                            }
-                        },
-                    },
+                    "url": proxied,
+                    "behaviorHints": {"notWebReady": True},
                 })
     return jsonify({"streams": streams})
 

@@ -1,0 +1,11 @@
+ * Serving Flask app 'stremio_addon'
+ * Debug mode: off
+INFO:werkzeug:[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:7000
+ * Running on http://192.168.0.188:7000
+INFO:werkzeug:[33mPress CTRL+C to quit[0m
+INFO:werkzeug:127.0.0.1 - - [22/Aug/2026 13:51:32] "GET /manifest.json HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [22/Aug/2026 13:52:21] "GET /proxy?url=https://vCVkQwY2zRcK.premilkyway.com/hls2/01/14796/84am08xaij9n_n/master.m3u8?t%3DKA4EZxkWP5CJdcZ2HMkTSpszXiHtw6o2Lfd8-VqL_O4%26s%3D1787417537%26e%3D129600%26f%3D73980892%26srv%3D6wyav2r9i6j%26i%3D0.4%26sp%3D500%26p1%3D6wyav2r9i6j%26p2%3D6wyav2r9i6j%26asn%3D27747&referer=https://streamwish.to/e/84am08xaij9n HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [22/Aug/2026 13:52:25] "GET /proxy?url=https://vCVkQwY2zRcK.premilkyway.com/hls2/01/14796/84am08xaij9n_n/index-v1-a1.m3u8?t%3DKA4EZxkWP5CJdcZ2HMkTSpszXiHtw6o2Lfd8-VqL_O4%26s%3D1787417537%26e%3D129600%26f%3D73980892%26srv%3D6wyav2r9i6j%26i%3D0.4%26sp%3D500%26p1%3D6wyav2r9i6j%26p2%3D6wyav2r9i6j%26asn%3D27747&referer=https://streamwish.to/e/84am08xaij9n HTTP/1.1" 200 -
+INFO:werkzeug:127.0.0.1 - - [22/Aug/2026 13:52:28] "[35m[1mGET /proxy?url=https://vcvkqwy2zrck.premilkyway.com/hls2/01/14796/84am08xaij9n_n/seg-1-v1-a1.ts?t%3DKA4EZxkWP5CJdcZ2HMkTSpszXiHtw6o2Lfd8-VqL_O4%26s%3D1787417537%26e%3D129600%26f%3D73980892%26srv%3D6wyav2r9i6j%26i%3D0.4%26sp%3D500%26p1%3D6wyav2r9i6j%26p2%3D6wyav2r9i6j%26asn%3D27747&referer=https://streamwish.to/e/84am08xaij9n HTTP/1.1[0m" 206 -

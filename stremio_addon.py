@@ -355,21 +355,51 @@ def jsunpack(html):
     return re.sub(r"\b\w+\b", replace_token, packed)
 
 
+# Dominios que nunca son streams de video (analytics, ads, CDNs de scripts)
+NON_MEDIA_DOMAINS = (
+    "googletagmanager.com", "google-analytics.com", "doubleclick.net",
+    "googleadservices.com", "googlesyndication.com", "facebook.net",
+    "twitter.com", "recaptcha", "cloudflare", "jsdelivr", "unpkg.com",
+    "jquery", "bootstrap", "fontawesome", "gstatic.com", "adservice",
+    "yandex", "metrika", "histats", "statcounter", "addthis",
+    "sharethis", "onesignal", "pushnami", "exoclick", "juicyads",
+    "popads", "propellerads", "adsterra", "clickadu", "hilltopads",
+)
+
+
+def _clean_stream_url(value):
+    return (value.replace("\\u0026", "&").replace("\\/", "/")
+            .replace("\\u003F", "?").replace("\\u003d", "="))
+
+
 def find_stream_in_html(html):
-    patterns = [
+    # Patrones que exigen extension de video: seguros sobre cualquier HTML
+    media_patterns = [
         r'"(?:file|hls\d?|source|src)"\s*:\s*"(https?://[^" ]+\.(?:m3u8|mp4)(?:\?[^" ]*)?)"',
         r"(?:file|hls|source|src)\s*[:=]\s*['\"](https?://[^'\"]+\.(?:m3u8|mp4)(?:\?[^'\"]*)?)",
-        r'"(?:file|hls\d?|source|src)"\s*:\s*"(https?://[^" ]+)"',
-        r"(?:file|hls|source|src)\s*[:=]\s*['\"](https?://[^'\"]+)",
         r"(https?://[^\s\"'<>]+\.m3u8(?:\?[^\s\"'<>]*)?)",
         r"(https?://[^\s\"'<>]+\.mp4(?:\?[^\s\"'<>]*)?)",
     ]
+    # Patrones genericos: solo se aceptan si el dominio no es de scripts/ads
+    generic_patterns = [
+        r'"(?:file|hls\d?|source|src)"\s*:\s*"(https?://[^" ]+)"',
+        r"(?:file|hls|source|src)\s*[:=]\s*['\"](https?://[^'\"]+)",
+    ]
     for html_variant in (html, jsunpack(html)):
-        for pattern in patterns:
+        for pattern in media_patterns:
             match = re.search(pattern, html_variant, re.I)
             if match:
-                return (match.group(1).replace("\\u0026", "&").replace("\\/", "/")
-                        .replace("\\u003F", "?").replace("\\u003d", "="))
+                return _clean_stream_url(match.group(1))
+        for pattern in generic_patterns:
+            for match in re.finditer(pattern, html_variant, re.I):
+                candidate = match.group(1)
+                low = candidate.lower()
+                # Rechazar scripts (.js), imagenes y dominios de analitica/ads
+                if re.search(r"\.(js|css|png|jpe?g|gif|svg|ico|woff2?)(\?|$)", low):
+                    continue
+                if any(domain in low for domain in NON_MEDIA_DOMAINS):
+                    continue
+                return _clean_stream_url(candidate)
     return None
 
 

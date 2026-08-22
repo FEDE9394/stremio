@@ -14,7 +14,7 @@ import re
 import string
 import struct
 import time
-from urllib.parse import quote_plus, unquote_plus, urlencode, urljoin, urlparse
+from urllib.parse import quote_plus, unquote_plus, urlencode, urljoin, urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -87,16 +87,16 @@ def entry_poster(entry):
 def thumbnail(tag):
     if not tag:
         return ""
-    value = tag.get("data-src") or tag.get("data-lazy-src") or tag.get("src") or ""
-    if not value:
-        srcset = tag.get("srcset") or tag.get("srcSet") or ""
-        if srcset:
-            value = srcset.split(",")[0].split(" ")[0]
+    value = tag.get("src") or tag.get("data-src") or ""
     if "url=" in value:
-        value = value.split("url=", 1)[1].split("&", 1)[0]
-    value = absolute_url(value)
+        try:
+            value = parse_qs(urlparse(value).query).get("url", [value])[0]
+        except ValueError:
+            pass
     if value.startswith("//"):
         value = "https:" + value
+    if value.startswith("/"):
+        return BASE_URL + value
     return value
 
 
@@ -294,9 +294,15 @@ def catalog_route(content_type, catalog_id, query=""):
             continue
         # Prioridad 1: datos estructurados __NEXT_DATA__ (posters TMDB)
         metas = next_data_items(html, content_type)
-        # Prioridad 2: scraping generico de tarjetas
+        # Completar posters ausentes con la misma tarjeta HTML usada por Kodi.
+        cards = [item for item in parse_cards(html) if item["type"] == content_type]
         if not metas:
-            metas = [item for item in parse_cards(html) if item["type"] == content_type]
+            metas = cards
+        else:
+            posters_by_url = {item["url"].rstrip("/"): item["poster"] for item in cards if item["poster"]}
+            for item in metas:
+                if not item["poster"]:
+                    item["poster"] = posters_by_url.get(item["url"].rstrip("/"), "")
         if metas:
             break
     return jsonify({"metas": [{key: item[key] for key in ("id", "type", "name", "poster", "description", "year")} for item in metas]})

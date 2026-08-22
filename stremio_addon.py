@@ -62,10 +62,15 @@ def absolute_url(value):
 def thumbnail(tag):
     if not tag:
         return ""
-    value = tag.get("data-src") or tag.get("src") or ""
+    value = tag.get("data-src") or tag.get("data-lazy-src") or tag.get("src") or ""
+    if not value and tag.get("srcset"):
+        value = tag["srcset"].split(",")[0].split(" ")[0]
     if "url=" in value:
         value = value.split("url=", 1)[1].split("&", 1)[0]
-    return absolute_url(value)
+    value = absolute_url(value)
+    if value.startswith("//"):
+        value = "https:" + value
+    return value
 
 
 def clean_title(value):
@@ -99,9 +104,49 @@ def card_to_item(card):
 
 
 def parse_cards(html):
+    """Extraccion robusta: recorre todos los enlaces a peliculas/series y
+    busca el contenedor con la imagen aunque cambien las clases del tema."""
     soup = BeautifulSoup(html, "html.parser")
-    cards = soup.find_all("li", class_="TPostMv") or soup.find_all("div", class_="TPost")
-    return [item for card in cards if (item := card_to_item(card))]
+    seen = set()
+    items = []
+    for link in soup.find_all("a", href=True):
+        href = absolute_url(link["href"])
+        path = urlparse(href).path
+        if "/pelicula/" not in path and "/serie/" not in path:
+            continue
+        if href.rstrip("/") in seen:
+            continue
+        # Buscar contenedor con imagen (li, article o div cercano)
+        container = link
+        image = None
+        for _ in range(5):
+            if container is None:
+                break
+            image = container.find("img")
+            if image:
+                break
+            container = container.parent
+        title = ""
+        if image:
+            title = image.get("alt", "") or image.get("title", "")
+        if not title:
+            heading = link.find(["h2", "h3"]) or (container.find(["h2", "h3"]) if container else None)
+            title = heading.get_text(" ", strip=True) if heading else link.get_text(" ", strip=True)
+        if not title:
+            continue
+        plot_el = container.find(class_=re.compile(r"[Dd]escription|[Cc]ontent", re.I)) if container else None
+        year_el = container.find(class_=re.compile(r"[Yy]ear|[Dd]ate", re.I)) if container else None
+        seen.add(href.rstrip("/"))
+        items.append({
+            "id": encode_id(href),
+            "url": href,
+            "name": clean_title(title),
+            "poster": thumbnail(image),
+            "description": plot_el.get_text(" ", strip=True) if plot_el else "",
+            "year": year_el.get_text(strip=True) if year_el else "",
+            "type": "series" if "/serie/" in path else "movie",
+        })
+    return items
 
 
 def next_data(url):
@@ -118,15 +163,15 @@ def next_data(url):
 def manifest():
     return {
         "id": "community.poseidonhd.stremio",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "name": "PoseidonHD",
         "description": "Peliculas y series de PoseidonHD",
         "resources": ["catalog", "meta", "stream"],
         "types": ["movie", "series"],
         "idPrefixes": ["poseidon_"],
         "catalogs": [
-            {"type": "movie", "id": "poseidon_movies", "name": "PoseidonHD Peliculas", "extra": [{"name": "search", "isRequired": False}]},
-            {"type": "series", "id": "poseidon_series", "name": "PoseidonHD Series", "extra": [{"name": "search", "isRequired": False}]},
+            {"type": "movie", "id": "poseidon_movies", "name": "PoseidonHD Peliculas", "extra": [{"name": "search", "isRequired": False}, {"name": "skip", "isRequired": False}]},
+            {"type": "series", "id": "poseidon_series", "name": "PoseidonHD Series", "extra": [{"name": "search", "isRequired": False}, {"name": "skip", "isRequired": False}]},
         ],
     }
 
@@ -136,19 +181,38 @@ def manifest_route():
     return jsonify(manifest())
 
 
+PAGE_SIZE = 30
+
+
 @app.get("/catalog/<content_type>/<catalog_id>.json")
 @app.get("/catalog/<content_type>/<catalog_id>/search=<query>.json")
 def catalog_route(content_type, catalog_id, query=""):
+    skip = request.args.get("skip") or ""
+    # Stremio tambien manda skip dentro del path como search=&skip=
+    match = re.search(r"skip=(\d+)", request.full_path)
+    if not skip and match:
+        skip = match.group(1)
+    page = int(skip) // PAGE_SIZE + 1 if skip.isdigit() else 1
+
+    urls = []
     if query:
-        url = f"{BASE_URL}/search?q={quote_plus(query)}"
+        query_clean = re.sub(r"&skip=\d+", "", query)
+        urls.append(f"{BASE_URL}/search?q={quote_plus(query_clean)}&page={page}")
+        urls.append(f"{BASE_URL}/search?q={quote_plus(query_clean)}")
     else:
         section = "peliculas" if content_type == "movie" else "series"
-        url = f"{BASE_URL}/{section}/"
-    try:
-        metas = parse_cards(fetch(url))
-    except requests.RequestException:
-        metas = []
-    metas = [item for item in metas if item["type"] == content_type]
+        urls.append(f"{BASE_URL}/{section}/page/{page}/")
+        urls.append(f"{BASE_URL}/{section}/?page={page}")
+        urls.append(f"{BASE_URL}/{section}/")
+
+    metas = []
+    for url in urls:
+        try:
+            metas = [item for item in parse_cards(fetch(url)) if item["type"] == content_type]
+        except requests.RequestException:
+            metas = []
+        if metas:
+            break
     return jsonify({"metas": [{key: item[key] for key in ("id", "type", "name", "poster", "description", "year")} for item in metas]})
 
 
@@ -229,14 +293,17 @@ def stream_route(content_type, content_id):
             except requests.RequestException:
                 embed = player_url
                 stream_url = None
+            label = f"{language} - {option.get('quality', 'HD')}"
+            source = option.get("cyberlocker", "PoseidonHD")
             if stream_url:
-                streams.append({"name": option.get("cyberlocker", "PoseidonHD"), "title": f"{language} - {option.get('quality', 'HD')}", "url": stream_url})
-            else:
-                streams.append({
-                    "name": option.get("cyberlocker", "PoseidonHD"),
-                    "title": f"{language} - {option.get('quality', 'HD')} (abrir reproductor)",
-                    "externalUrl": embed,
-                })
+                # Stream directo: no abre navegador, evita propagandas en Android
+                streams.append({"name": source, "title": label, "url": stream_url})
+            # Opcion alternativa para ver desde Poseidon (reproductor externo)
+            streams.append({
+                "name": source,
+                "title": f"{label} (ver en Poseidon)",
+                "externalUrl": embed,
+            })
     return jsonify({"streams": streams})
 
 

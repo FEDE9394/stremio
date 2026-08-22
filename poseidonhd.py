@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus, unquote_plus, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -243,7 +243,8 @@ def catalog_route(content_type, catalog_id, query=""):
 
     urls = []
     if query:
-        query_clean = re.sub(r"&skip=\d+", "", query)
+        query_clean = unquote_plus(query)
+        query_clean = re.sub(r"&skip=\d+", "", query_clean).strip()
         urls.append(f"{BASE_URL}/search?q={quote_plus(query_clean)}&page={page}")
         urls.append(f"{BASE_URL}/search?q={quote_plus(query_clean)}")
     else:

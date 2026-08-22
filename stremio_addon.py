@@ -219,9 +219,16 @@ def stream_route(content_type, content_id):
                 embed = extract_embed(player_url, content_url)
                 stream_url = resolve(embed, content_url)
             except requests.RequestException:
+                embed = player_url
                 stream_url = None
             if stream_url:
                 streams.append({"name": option.get("cyberlocker", "PoseidonHD"), "title": f"{language} - {option.get('quality', 'HD')}", "url": stream_url})
+            else:
+                streams.append({
+                    "name": option.get("cyberlocker", "PoseidonHD"),
+                    "title": f"{language} - {option.get('quality', 'HD')} (abrir reproductor)",
+                    "externalUrl": embed,
+                })
     return jsonify({"streams": streams})
 
 

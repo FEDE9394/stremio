@@ -63,8 +63,10 @@ def thumbnail(tag):
     if not tag:
         return ""
     value = tag.get("data-src") or tag.get("data-lazy-src") or tag.get("src") or ""
-    if not value and tag.get("srcset"):
-        value = tag["srcset"].split(",")[0].split(" ")[0]
+    if not value:
+        srcset = tag.get("srcset") or tag.get("srcSet") or ""
+        if srcset:
+            value = srcset.split(",")[0].split(" ")[0]
     if "url=" in value:
         value = value.split("url=", 1)[1].split("&", 1)[0]
     value = absolute_url(value)
@@ -163,7 +165,7 @@ def next_data(url):
 def manifest():
     return {
         "id": "community.poseidonhd.stremio",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "name": "PoseidonHD",
         "description": "Peliculas y series de PoseidonHD",
         "resources": ["catalog", "meta", "stream"],
@@ -179,6 +181,43 @@ def manifest():
 @app.get("/manifest.json")
 def manifest_route():
     return jsonify(manifest())
+
+
+def next_data_items(html, content_type):
+    """Extrae items directamente del __NEXT_DATA__ (posters TMDB garantizados)."""
+    soup = BeautifulSoup(html, "html.parser")
+    script = soup.find("script", id="__NEXT_DATA__")
+    if not script or not script.string:
+        return []
+    try:
+        props = json.loads(script.string).get("props", {}).get("pageProps", {})
+    except json.JSONDecodeError:
+        return []
+    key = "movies" if content_type == "movie" else "series"
+    entries = props.get(key) or []
+    items = []
+    for entry in entries if isinstance(entries, list) else []:
+        url = entry.get("url") or {}
+        slug = url.get("slug") if isinstance(url, dict) else url
+        if not slug:
+            continue
+        # El slug usa movies/ y series/, pero las paginas reales son
+        # pelicula/ y serie/
+        slug = re.sub(r"^/?movies/", "pelicula/", str(slug).lstrip("/"))
+        slug = re.sub(r"^/?series/", "serie/", slug)
+        href = absolute_url(slug)
+        images = entry.get("images") or {}
+        titles = entry.get("titles") or {}
+        release = str(entry.get("releaseDate") or "")
+        items.append({
+            "id": encode_id(href),
+            "type": content_type,
+            "name": clean_title(titles.get("name") or ""),
+            "poster": images.get("poster") or "",
+            "description": entry.get("overview") or "",
+            "year": release[:4] if release else "",
+        })
+    return items
 
 
 PAGE_SIZE = 30
@@ -208,9 +247,14 @@ def catalog_route(content_type, catalog_id, query=""):
     metas = []
     for url in urls:
         try:
-            metas = [item for item in parse_cards(fetch(url)) if item["type"] == content_type]
+            html = fetch(url)
         except requests.RequestException:
-            metas = []
+            continue
+        # Prioridad 1: datos estructurados __NEXT_DATA__ (posters TMDB)
+        metas = next_data_items(html, content_type)
+        # Prioridad 2: scraping generico de tarjetas
+        if not metas:
+            metas = [item for item in parse_cards(html) if item["type"] == content_type]
         if metas:
             break
     return jsonify({"metas": [{key: item[key] for key in ("id", "type", "name", "poster", "description", "year")} for item in metas]})
@@ -253,18 +297,31 @@ def extract_embed(player_url, content_url):
     return absolute_url(iframe["src"]) if iframe else player_url
 
 
+def _base36(value):
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    if value == 0:
+        return "0"
+    out = ""
+    while value:
+        value, rest = divmod(value, 36)
+        out = digits[rest] + out
+    return out
+
+
 def jsunpack(html):
-    """Desempaqueta scripts ofuscados p,a,c,k,e,d (streamwish, filemoon, etc.)."""
+    """Desempaqueta scripts ofuscados p,a,c,k,e,d (streamwish, filemoon, etc.).
+    Soporta radix decimal y base 36."""
     match = re.search(
         r"eval\(function\(p,a,c,k,e,d\)\{.*?\}\('(.+?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)",
         html, re.S)
     if not match:
         return html
-    packed, a, c, k = match.group(1), int(match.group(2)), int(match.group(3)), match.group(4).split("|")
+    packed, radix, count, words = match.group(1), int(match.group(2)), int(match.group(3)), match.group(4).split("|")
     unpacked = packed
-    for i in range(c - 1, -1, -1):
-        if i < len(k) and k[i]:
-            unpacked = re.sub(r"\b%d\b" % i, lambda m, word=k[i]: word, unpacked)
+    for i in range(count - 1, -1, -1):
+        if i < len(words) and words[i]:
+            token = _base36(i) if radix == 36 else str(i)
+            unpacked = re.sub(r"\b%s\b" % re.escape(token), lambda m, word=words[i]: word, unpacked)
     return unpacked
 
 
@@ -283,15 +340,28 @@ def find_stream_in_html(html):
     return None
 
 
+STREAMWISH_MIRRORS = ["https://wishonly.site", "https://swhoi.com"]
+
+
 def resolve(embed_url, content_url):
     if re.search(r"\.(m3u8|mp4)(\?|$)", embed_url, re.I):
         return embed_url
-    try:
-        parsed = urlparse(embed_url)
-        html = fetch(embed_url, f"{parsed.scheme}://{parsed.netloc}/")
-    except requests.RequestException:
-        return None
-    return find_stream_in_html(html)
+    parsed = urlparse(embed_url)
+    referer = f"{parsed.scheme}://{parsed.netloc}/"
+    candidates = [embed_url]
+    # Streamwish sirve una pagina "Loading..." con main.js que redirige a un
+    # espejo; probamos espejos conocidos con el mismo path.
+    if "streamwish" in parsed.netloc or "wish" in parsed.netloc:
+        candidates += [mirror + parsed.path + ("?" + parsed.query if parsed.query else "") for mirror in STREAMWISH_MIRRORS]
+    for candidate in candidates:
+        try:
+            html = fetch(candidate, referer)
+        except requests.RequestException:
+            continue
+        stream_url = find_stream_in_html(html)
+        if stream_url:
+            return stream_url
+    return None
 
 
 @app.get("/stream/<content_type>/<content_id>.json")

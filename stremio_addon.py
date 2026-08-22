@@ -295,14 +295,25 @@ def stream_route(content_type, content_id):
                 stream_url = None
             label = f"{language} - {option.get('quality', 'HD')}"
             source = option.get("cyberlocker", "PoseidonHD")
-            if stream_url:
-                # Stream directo: no abre navegador, evita propagandas en Android
-                streams.append({"name": source, "title": label, "url": stream_url})
-            # Opcion alternativa para ver desde Poseidon (reproductor externo)
+            if not stream_url:
+                continue
+            # Forzar reproduccion en el reproductor interno de Stremio:
+            # solo se devuelven URLs directas con los headers necesarios.
+            parsed = urlparse(stream_url)
+            referer = f"{parsed.scheme}://{parsed.netloc}/"
             streams.append({
                 "name": source,
-                "title": f"{label} (ver en Poseidon)",
-                "externalUrl": embed,
+                "title": label,
+                "url": stream_url,
+                "behaviorHints": {
+                    "notWebReady": True,
+                    "proxyHeaders": {
+                        "request": {
+                            "User-Agent": USER_AGENT,
+                            "Referer": referer,
+                        }
+                    },
+                },
             })
     return jsonify({"streams": streams})
 

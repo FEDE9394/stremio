@@ -253,23 +253,45 @@ def extract_embed(player_url, content_url):
     return absolute_url(iframe["src"]) if iframe else player_url
 
 
+def jsunpack(html):
+    """Desempaqueta scripts ofuscados p,a,c,k,e,d (streamwish, filemoon, etc.)."""
+    match = re.search(
+        r"eval\(function\(p,a,c,k,e,d\)\{.*?\}\('(.+?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)",
+        html, re.S)
+    if not match:
+        return html
+    packed, a, c, k = match.group(1), int(match.group(2)), int(match.group(3)), match.group(4).split("|")
+    unpacked = packed
+    for i in range(c - 1, -1, -1):
+        if i < len(k) and k[i]:
+            unpacked = re.sub(r"\b%d\b" % i, lambda m, word=k[i]: word, unpacked)
+    return unpacked
+
+
+def find_stream_in_html(html):
+    patterns = [
+        r'"(?:file|hls\d?|source|src)"\s*:\s*"(https?://[^"]+\.(?:m3u8|mp4)[^"]*)"',
+        r"(?:file|hls|source|src)\s*[:=]\s*['\"](https?://[^'\"]+\.(?:m3u8|mp4)[^'\"]*)",
+        r"(https?://[^\s\"'<>]+\.m3u8(?:\?[^\s\"'<>]*)?)",
+        r"(https?://[^\s\"'<>]+\.mp4(?:\?[^\s\"'<>]*)?)",
+    ]
+    for html_variant in (html, jsunpack(html)):
+        for pattern in patterns:
+            match = re.search(pattern, html_variant, re.I)
+            if match:
+                return match.group(1).replace("\\u0026", "&").replace("\\/", "/")
+    return None
+
+
 def resolve(embed_url, content_url):
     if re.search(r"\.(m3u8|mp4)(\?|$)", embed_url, re.I):
         return embed_url
     try:
-        html = fetch(embed_url, content_url)
+        parsed = urlparse(embed_url)
+        html = fetch(embed_url, f"{parsed.scheme}://{parsed.netloc}/")
     except requests.RequestException:
         return None
-    patterns = [
-        r"(?:file|hls|src)\s*['\"]?\s*[:=]\s*['\"](https?://[^'\"]+\.(?:m3u8|mp4)[^'\"]*)",
-        r"(https?://[^\s\"'<>]+\.m3u8(?:\?[^\s\"'<>]*)?)",
-        r"(https?://[^\s\"'<>]+\.mp4(?:\?[^\s\"'<>]*)?)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, html, re.I)
-        if match:
-            return match.group(1).replace("\\u0026", "&")
-    return None
+    return find_stream_in_html(html)
 
 
 @app.get("/stream/<content_type>/<content_id>.json")
@@ -295,26 +317,31 @@ def stream_route(content_type, content_id):
                 stream_url = None
             label = f"{language} - {option.get('quality', 'HD')}"
             source = option.get("cyberlocker", "PoseidonHD")
-            if not stream_url:
-                continue
-            # Forzar reproduccion en el reproductor interno de Stremio:
-            # solo se devuelven URLs directas con los headers necesarios.
-            parsed = urlparse(stream_url)
-            referer = f"{parsed.scheme}://{parsed.netloc}/"
-            streams.append({
-                "name": source,
-                "title": label,
-                "url": stream_url,
-                "behaviorHints": {
-                    "notWebReady": True,
-                    "proxyHeaders": {
-                        "request": {
-                            "User-Agent": USER_AGENT,
-                            "Referer": referer,
-                        }
+            if stream_url:
+                # Stream directo: se reproduce dentro de Stremio, sin navegador ni propagandas
+                parsed = urlparse(stream_url)
+                referer = f"{parsed.scheme}://{parsed.netloc}/"
+                streams.append({
+                    "name": source,
+                    "title": label,
+                    "url": stream_url,
+                    "behaviorHints": {
+                        "notWebReady": True,
+                        "proxyHeaders": {
+                            "request": {
+                                "User-Agent": USER_AGENT,
+                                "Referer": referer,
+                            }
+                        },
                     },
-                },
-            })
+                })
+            else:
+                # Fallback: abrir el reproductor de Poseidon en el navegador
+                streams.append({
+                    "name": source,
+                    "title": f"{label} (ver en Poseidon)",
+                    "externalUrl": embed,
+                })
     return jsonify({"streams": streams})
 
 
